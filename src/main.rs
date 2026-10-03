@@ -26,7 +26,7 @@ use std::time::Instant;
 #[command(
     name = "archguard",
     version,
-    about = "Check Python imports against architectural boundaries"
+    about = "Check project dependencies and imports against architectural boundaries"
 )]
 struct Cli {
     /// YAML configuration; all project paths are relative to its directory.
