@@ -1,0 +1,38 @@
+[package]
+name = "archguard"
+version = "0.1.0"
+edition = "2024"
+authors = ["sultan aldurywish"]
+description = "A high-performance static architecture boundary linter"
+readme = "README.md"
+
+[dependencies]
+# 1. CLI Processing
+clap = { version = "4.4", features = ["derive", "env"] }
+
+# 2. Serialization & Config Parsing
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"
+serde_json = "1.0"
+
+# 3. AST Parsing with Tree-Sitter
+tree-sitter = "0.22"
+tree-sitter-python = "0.21"
+
+# 4. Glob Matching & File Directory Traversal
+globset = "0.4"
+walkdir = "2.4"
+ignore = "0.4"
+
+# 5. Error Handling & Diagnostics
+thiserror = "1.0"
+anyhow = "1.0"
+
+# 6. Terminal Output Formatting
+colored = "2.1"
+
+# 7. Multi-threading Performance
+rayon = "1.8"
+
+[dev-dependencies]
+tempfile = "3.8"
