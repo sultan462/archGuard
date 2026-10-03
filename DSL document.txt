@@ -1,0 +1,370 @@
+# ArchGuard YAML DSL Guide
+
+Use `archguard.yaml` to define the modules in your project and control which modules may import one another.
+
+ArchGuard follows a **Default Allow** policy: dependencies are permitted unless a rule restricts them.
+
+## 1. Configuration File
+
+Create an `archguard.yaml` file at your project root:
+
+```yaml
+version: "1"
+name: "My Project"
+language: python
+
+modules:
+  - name: application
+    path: "src/application/**/*.py"
+
+  - name: domain
+    path: "src/domain/**/*.py"
+
+rules:
+  - module: domain
+    allow_only_to: []
+    reason: "Domain must not depend on other architectural modules."
+
+ignore:
+  - "tests/**/*.py"
+```
+
+YAML comments beginning with `#` are supported.
+
+### Root Fields
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `version` | String | Yes | Must be `"1"`. |
+| `name` | String | No | Project name shown in reports. |
+| `language` | String | Yes | Language to analyze. Use `python` for Python projects. |
+| `modules` | Array of objects | Yes | Module names and their file patterns. |
+| `rules` | Array of objects | No | Dependency constraints. Defaults to `[]`. |
+| `ignore` | Array of strings | No | File patterns excluded from analysis. Defaults to `[]`. |
+
+Quote the version as `"1"`. Numeric `1` and string `"1.0"` are invalid.
+
+Omit unused optional fields rather than assigning `null`.
+
+## 2. Selecting the Language
+
+Set `language` to the language of the source files you want to analyze:
+
+```yaml
+language: python
+```
+
+Language identifiers are case-insensitive, so `python` and `Python` are equivalent.
+
+With `language: python`, ArchGuard analyzes `.py` files. Other file types are not included, even if they match a module’s path pattern.
+
+If the configured language is unsupported by your installed ArchGuard release, analysis stops before files are scanned. The error identifies the unsupported language and lists supported values.
+
+## 3. Defining Modules
+
+A module groups source files under a name that rules can reference.
+
+Each module requires two string fields:
+
+| Field | Description |
+|---|---|
+| `name` | Unique, case-sensitive module identifier. |
+| `path` | Glob pattern selecting the module’s files. |
+
+```yaml
+modules:
+  - name: presentation
+    path: "src/controllers/**/*.py"
+
+  - name: application
+    path: "src/services/**/*.py"
+
+  - name: domain
+    path: "src/models/**/*.py"
+```
+
+### Path Patterns
+
+Module paths and ignore patterns are relative to the directory containing `archguard.yaml`.
+
+| Pattern | Matches |
+|---|---|
+| `src/domain/*.py` | Python files directly inside `src/domain/`. |
+| `src/domain/**/*.py` | Python files inside `src/domain/` and any nested directories. |
+| `src/domain/**` | All supported source files under `src/domain/`. |
+
+`*` does not cross directory separators. `**` matches across zero or more directory levels.
+
+For example, `src/domain/**/*.py` matches both:
+
+```text
+src/domain/order.py
+src/domain/entities/order.py
+```
+
+### Module Membership
+
+Each analyzed file may belong to only one module. If a file matches multiple module definitions, ArchGuard reports a configuration error.
+
+Ignore patterns are applied before checking module membership.
+
+Project source files that match no module are reported as **Coverage Gaps**. Dependencies involving those files are not checked.
+
+## 4. Writing Rules
+
+A rule uses `module` to identify the module being constrained.
+
+```yaml
+rules:
+  - name: "Application depends inward"
+    module: application
+    allow_only_to: [domain]
+    reason: "Application may depend only on Domain."
+```
+
+### Rule Fields
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `module` | String | Yes | Module to constrain. |
+| `name` | String | No | Short rule description for reports. |
+| `reason` | String | No | Explanation shown when the rule is violated. |
+| `deny_to` | Array of strings | No | Modules the subject must not import. |
+| `allow_only_to` | Array of strings | No | Only modules the subject may import. |
+| `deny_from` | Array of strings | No | Modules that must not import the subject. |
+| `allow_only_from` | Array of strings | No | Only modules that may import the subject. |
+
+Each rule must contain at least one constraint. Every referenced module must be declared in `modules`.
+
+Constraint values must be arrays of module names. An empty array is valid; a scalar string or `null` is invalid.
+
+### Block Outbound Dependencies
+
+Use `deny_to` to prevent a module from importing particular modules:
+
+```yaml
+- module: presentation
+  deny_to: [infrastructure]
+```
+
+This rejects `presentation → infrastructure`.
+
+### Limit Outbound Dependencies
+
+Use `allow_only_to` to restrict a module’s imports to a specific set:
+
+```yaml
+- module: application
+  allow_only_to: [domain, utils]
+```
+
+Application may import Domain and Utils. Imports into other declared modules are rejected.
+
+### Block Inbound Dependencies
+
+Use `deny_from` to prevent particular modules from importing the subject:
+
+```yaml
+- module: domain
+  deny_from: [presentation]
+```
+
+This rejects `presentation → domain`.
+
+### Limit Inbound Dependencies
+
+Use `allow_only_from` to restrict which modules may import the subject:
+
+```yaml
+- module: application
+  allow_only_from: [presentation, infrastructure]
+```
+
+Only Presentation and Infrastructure may import Application.
+
+The examples above are independent illustrations. Combining them applies all their restrictions together.
+
+## 5. How Rules Combine
+
+For an import from module `A` into module `B`, ArchGuard checks:
+
+- Outbound constraints on `A`.
+- Inbound constraints on `B`.
+
+**Every applicable constraint must pass.**
+
+Rule order does not matter. One rule cannot override another rule’s restriction, and inclusion in an allowlist does not override a denial.
+
+For example:
+
+```yaml
+rules:
+  - module: presentation
+    allow_only_to: [application, domain]
+
+  - module: domain
+    deny_from: [presentation]
+```
+
+`presentation → domain` is rejected because Domain’s inbound rule denies it.
+
+### Multiple Allowlists
+
+Multiple allowlists in the same direction intersect: only modules present in every applicable list remain permitted.
+
+```yaml
+rules:
+  - module: presentation
+    allow_only_to: [application, domain]
+
+  - module: presentation
+    allow_only_to: [application, utils]
+```
+
+Presentation may import only Application.
+
+Inbound and outbound allowlists are evaluated separately.
+
+### Empty and Omitted Constraints
+
+| Configuration | Effect |
+|---|---|
+| Constraint omitted | Adds no restriction. |
+| `deny_to: []` | Denies no outbound dependencies. |
+| `deny_from: []` | Denies no inbound dependencies. |
+| `allow_only_to: []` | Prohibits imports into other declared modules. |
+| `allow_only_from: []` | Prohibits imports from other declared modules. |
+
+An empty `rules` array applies no architectural restrictions.
+
+When you add a new module, existing allowlists exclude it unless you update them. Existing denylists do not automatically exclude it.
+
+## 6. What Rules Cover
+
+Rules check **direct imports between distinct declared modules**.
+
+The following behaviors apply regardless of the configured constraints:
+
+| Dependency | Behavior |
+|---|---|
+| Between files in the same module | Always permitted. |
+| To Python standard-library or third-party packages | Outside enforcement scope. |
+| Involving unmatched project files | Not checked; unmatched files appear as coverage gaps. |
+| Involving ignored files | Excluded from evaluation. |
+
+For example, `allow_only_to: []` prevents imports into other declared modules. It does not prevent internal imports or imports such as `import os`.
+
+Rules do not check transitive dependencies or detect cycles. If `A` imports `B` and `B` imports `C`, that does not create a direct `A → C` import.
+
+## 7. Ignoring Files
+
+Use `ignore` to exclude files from analysis:
+
+```yaml
+ignore:
+  - "tests/**/*.py"
+  - "src/**/test_*.py"
+  - "src/conftest.py"
+```
+
+Ignored files:
+
+- Are not parsed for imports.
+- Are excluded from module assignment and overlap checks.
+- Are exempt on both sides of a dependency.
+- Are not reported as coverage gaps.
+
+Dependencies involving ignored files are excluded even when a module has an empty allowlist.
+
+## 8. Configuration Errors
+
+ArchGuard stops analysis if the configuration contains:
+
+- Missing required fields.
+- Incorrect field types or explicit `null` values.
+- Unknown root, module, or rule fields.
+- An unsupported version or language.
+- Duplicate module names.
+- References to undeclared modules.
+- Rules containing none of the four supported constraints.
+- Non-ignored source files matching multiple modules.
+
+A **configuration error** prevents analysis. An **architectural violation** identifies an import that fails a valid rule.
+
+## 9. Complete Example
+
+```yaml
+version: "1"
+name: "E-Commerce Backend"
+language: python
+
+modules:
+  - name: presentation
+    path: "src/controllers/**/*.py"
+
+  - name: application
+    path: "src/services/**/*.py"
+
+  - name: domain
+    path: "src/models/**/*.py"
+
+  - name: infrastructure
+    path: "src/db/**/*.py"
+
+  - name: utils
+    path: "src/common/**/*.py"
+
+rules:
+  # Domain has no dependencies on other declared modules.
+  - name: "Domain is independent"
+    module: domain
+    allow_only_to: []
+    reason: "Domain must not depend on other architectural modules."
+
+  # Application uses Domain and shared utilities.
+  - name: "Application depends inward"
+    module: application
+    allow_only_to: [domain, utils]
+    reason: "Application may depend only on Domain and Utils."
+
+  # Presentation accesses business behavior through Application.
+  - name: "Presentation uses Application"
+    module: presentation
+    allow_only_to: [application, utils]
+    reason: "Presentation may depend only on Application and Utils."
+
+  # Infrastructure can reference the inner layers.
+  - name: "Infrastructure dependencies"
+    module: infrastructure
+    allow_only_to: [application, domain, utils]
+    reason: "Infrastructure must not depend on Presentation."
+
+  # Only the outer layers may import Application.
+  - name: "Application inbound dependencies"
+    module: application
+    allow_only_from: [presentation, infrastructure]
+    reason: "Only Presentation and Infrastructure may import Application."
+
+  # Utilities remain independent of other declared modules.
+  - name: "Independent utilities"
+    module: utils
+    allow_only_to: []
+    reason: "Utils must not depend on other architectural modules."
+
+ignore:
+  - "tests/**/*.py"
+  - "src/**/test_*.py"
+  - "src/conftest.py"
+```
+
+This configuration permits the following dependencies between distinct modules:
+
+| Source | Permitted targets |
+|---|---|
+| `presentation` | `application`, `utils` |
+| `application` | `domain`, `utils` |
+| `domain` | None |
+| `infrastructure` | `application`, `domain`, `utils` |
+| `utils` | None |
+
+Imports within each module remain permitted.

@@ -1,0 +1,138 @@
+# ArchGuard Report Schema v1
+
+Types below describe the JSON report structure. Paths are project-relative; line and column numbers are 1-based. Arrays are empty when no entries exist.
+
+```yaml
+report_version: "1"
+
+tool:
+  name: archguard
+  version: string
+
+project:
+  name: string | null
+  config: string
+  language: string
+
+run:
+  status: pass | fail | incomplete | error
+  duration_ms: integer
+
+summary:
+  files_analyzed: integer
+  files_assigned: integer
+  files_unassigned: integer
+  files_ignored: integer
+  files_failed: integer
+  modules: integer
+  rules: integer
+  dependencies_checked: integer
+  violations: integer
+  unresolved_imports: integer
+
+violations:
+  - source:
+      module: string
+      file: string
+      line: integer
+      column: integer
+      statement: string
+
+    target:
+      module: string
+      file: string
+
+    failed_constraints:
+      - rule_index: integer
+        rule_name: string | null
+        rule_module: string
+        constraint: deny_to | allow_only_to | deny_from | allow_only_from
+        configured_modules: [string]
+        reason: string | null
+        config_line: integer
+
+coverage:
+  unassigned_files: [string]
+  empty_modules: [string]
+
+diagnostics:
+  - severity: warning | error
+    code: string
+    message: string
+    location:
+      file: string
+      line: integer | null
+      column: integer | null
+```
+
+## Status and Exit Codes
+
+| Status | Meaning | Exit code |
+|---|---|---|
+| `pass` | Analysis completed; no violations. | `0` |
+| `fail` | Analysis completed; violations found. | `1` |
+| `incomplete` | Some files or imports could not be analyzed reliably. | `2` |
+| `error` | Configuration or execution failure prevented analysis. | `2` |
+
+Status precedence: `error` → `incomplete` → `fail` → `pass`. Preserve discovered violations even when analysis is incomplete.
+
+Coverage gaps alone do not change the status to `fail` or `incomplete`.
+
+## Counting and Grouping
+
+- One violation represents one import occurrence to one target file. Include every failed constraint under that violation.
+- `rule_index` is the rule’s zero-based position in the configuration.
+- `dependencies_checked` counts resolved import occurrences between distinct declared modules, including permitted and rejected dependencies.
+- `files_analyzed` counts successfully analyzed, non-ignored source files.
+- `files_assigned + files_unassigned = files_analyzed + files_failed`.
+- `empty_modules` lists modules with no matching, non-ignored source files.
+- Unresolved imports receive diagnostics and make analysis incomplete. Confirmed external imports are excluded normally.
+- Sort violations by source file, line, column, and target file for stable output.
+
+For an `error` report, unavailable values are `null`, including summary counts. Empty arrays mean no findings were collected; they do not indicate successful analysis.
+
+## Diagnostic Codes
+
+| Code | Meaning |
+|---|---|
+| `CONFIG_INVALID` | Invalid fields, types, version, or rule references. |
+| `LANGUAGE_UNSUPPORTED` | Configured language is unsupported. |
+| `MODULE_OVERLAP` | A file matches multiple modules. |
+| `FILE_READ_FAILED` | A source file could not be read. |
+| `PARSE_FAILED` | A source file could not be parsed reliably. |
+| `IMPORT_UNRESOLVED` | An import could not be classified or resolved. |
+| `INTERNAL_ERROR` | Unexpected analysis failure. |
+
+Use `location: null` when no file location applies.
+
+## CLI Presentation
+
+```text
+FAIL  E-Commerce Backend · Python
+
+42 files analyzed · 5 modules · 68 dependencies checked
+2 violations · 3 uncovered files · 0 analysis errors
+
+src/controllers/orders.py:8:1
+presentation → infrastructure
+  from db.orders import OrderRepository
+  Rule: Presentation uses Application
+  Allowed targets: application, utils
+  Reason: Presentation may depend only on Application and Utils.
+  Config: archguard.yaml:36
+
+src/services/orders.py:12:1
+application → presentation
+  from controllers.responses import OrderResponse
+  Rule: Application depends inward
+  Allowed targets: domain, utils
+  Reason: Application may depend only on Domain and Utils.
+  Config: archguard.yaml:29
+
+Coverage gaps
+  src/bootstrap.py
+  src/jobs/cleanup.py
+  src/jobs/export.py
+```
+
+Show diagnostics and empty modules only when present. Each violation should provide the import location, dependency direction, failed restriction, and configured reason.
