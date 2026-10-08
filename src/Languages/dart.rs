@@ -53,7 +53,7 @@ struct Resolver<'a> {
 pub fn analyze(config: &ArchGuardConfig) -> Result<AnalysisOutcome, PipelineError> {
     let mut parser = Parser::new();
     parser
-        .set_language(&tree_sitter_dart::language())
+        .set_language(&tree_sitter_dart::LANGUAGE.into())
         .map_err(|error| {
             Diagnostic::error(
                 "INTERNAL_ERROR",
@@ -462,6 +462,10 @@ impl<'a> Resolver<'a> {
         };
         match self.canonical_files.get(&canonical).map(Vec::as_slice) {
             Some([file]) => return Resolution::Project(file),
+            // Multiple ignored aliases have the same enforcement outcome.
+            Some([first, rest @ ..]) if first.ignored && rest.iter().all(|file| file.ignored) => {
+                return Resolution::Project(first);
+            }
             Some(_) => return Resolution::Unresolved("Dependency has multiple project aliases with potentially different module membership".into()),
             None => {}
         }
@@ -1130,15 +1134,21 @@ mod tests {
             ],
         );
         let output = analyze(&cfg).unwrap();
-        assert_eq!(output.files.iter().filter(|f| f.succeeded).count(), 2);
-        assert_eq!(output.files.iter().filter(|f| !f.succeeded).count(), 3);
+        assert_eq!(output.files.iter().filter(|f| f.succeeded).count(), 3);
+        assert_eq!(output.files.iter().filter(|f| !f.succeeded).count(), 2);
+        assert!(
+            output
+                .files
+                .iter()
+                .any(|file| { file.file == Path::new("new_syntax.dart") && file.succeeded })
+        );
         assert_eq!(
             output
                 .diagnostics
                 .iter()
                 .filter(|d| d.code == "PARSE_FAILED")
                 .count(),
-            2
+            1
         );
         assert_eq!(
             output
@@ -1311,6 +1321,125 @@ mod tests {
             local_uri(temp.path(), &file_uri).unwrap(),
             temp.path().join("a.dart")
         );
+    }
+
+    #[test]
+    fn modern_syntax_preserves_import_export_and_part_dependencies() {
+        let temp = TempDir::new().unwrap();
+        put(
+            temp.path(),
+            "main.dart",
+            r#"library modern;
+import 'target.dart' as dep;
+export 'target.dart' show Thing;
+part 'piece.dart';
+
+sealed class State {}
+final class Ready extends State {}
+extension type UserId(int value) {}
+final pair = (1, label: 'one');
+String describe((int, {String label}) value) => switch (value) {
+  (final number, label: final label) when number > 0 => label,
+  _ => 'none',
+};
+void inspect(Object value) {
+  if (value case [int first, ...var rest]) {
+    final (number, label: label) = pair;
+  }
+}
+"#,
+        );
+        put(temp.path(), "target.dart", "class Thing {}\n");
+        put(temp.path(), "piece.dart", "part of modern;\n");
+        let cfg = config(
+            temp.path(),
+            &[
+                ("main.dart", Some("app"), false),
+                ("target.dart", Some("domain"), false),
+                ("piece.dart", Some("app"), false),
+            ],
+        );
+        let output = analyze(&cfg).unwrap();
+        assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+        assert_eq!(output.files.iter().filter(|file| file.succeeded).count(), 3);
+        assert_eq!(output.dependencies.len(), 3);
+        for (edge, line, target, statement) in [
+            (
+                &output.dependencies[0],
+                2,
+                "target.dart",
+                "import 'target.dart' as dep;",
+            ),
+            (
+                &output.dependencies[1],
+                3,
+                "target.dart",
+                "export 'target.dart' show Thing;",
+            ),
+            (
+                &output.dependencies[2],
+                4,
+                "piece.dart",
+                "part 'piece.dart';",
+            ),
+        ] {
+            assert_eq!(edge.resolution, DependencyResolution::Project);
+            assert_eq!(edge.target_file.as_deref(), Some(Path::new(target)));
+            assert_eq!((edge.line, edge.column), (line, 1));
+            assert_eq!(edge.statement, statement);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ignored_package_aliases_resolve_but_mixed_or_assigned_aliases_remain_uncertain() {
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        let package = temp.path().join("vendor");
+        put(&package, "lib/api.dart", "");
+        put(&project, "main.dart", "import 'package:vendor/api.dart';\n");
+        put(
+            &project,
+            ".dart_tool/package_config.json",
+            r#"{"configVersion":2,"packages":[{"name":"vendor","rootUri":"../../vendor/","packageUri":"lib/"}]}"#,
+        );
+        std::os::unix::fs::symlink(&package, project.join("alias_a")).unwrap();
+        std::os::unix::fs::symlink(&package, project.join("alias_b")).unwrap();
+        for (ignored_a, ignored_b) in [(true, true), (true, false), (false, true), (false, false)] {
+            let cfg = config(
+                &project,
+                &[
+                    ("main.dart", Some("app"), false),
+                    (
+                        "alias_a/lib/api.dart",
+                        if ignored_a { None } else { Some("a") },
+                        ignored_a,
+                    ),
+                    (
+                        "alias_b/lib/api.dart",
+                        if ignored_b { None } else { Some("b") },
+                        ignored_b,
+                    ),
+                ],
+            );
+            let output = analyze(&cfg).unwrap();
+            assert_eq!(output.dependencies.len(), 1);
+            let edge = &output.dependencies[0];
+            if ignored_a && ignored_b {
+                assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+                assert_eq!(edge.resolution, DependencyResolution::Project);
+                assert!(edge.target_ignored);
+                assert!(edge.target_module.is_none());
+                assert_eq!(
+                    edge.target_file.as_deref(),
+                    Some(Path::new("alias_a/lib/api.dart"))
+                );
+            } else {
+                assert_eq!(edge.resolution, DependencyResolution::Unresolved);
+                assert_eq!(output.diagnostics.len(), 1);
+                assert_eq!(output.diagnostics[0].code, "IMPORT_UNRESOLVED");
+            }
+        }
     }
 
     #[test]
