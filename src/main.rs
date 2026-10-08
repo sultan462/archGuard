@@ -4,6 +4,7 @@ mod DataModels {
 }
 #[allow(non_snake_case)]
 mod Languages {
+    pub mod dart;
     pub mod python;
 }
 mod pipeline {

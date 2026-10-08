@@ -132,6 +132,7 @@ fn count(value: Option<usize>) -> String {
 fn human_report(report: &Report) -> String {
     let mut text = String::new();
     let language = match report.project.language.as_deref() {
+        Some("dart") => "Dart",
         Some("python") => "Python",
         Some(other) => other,
         None => "unknown language",

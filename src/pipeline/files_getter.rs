@@ -43,7 +43,7 @@ pub fn files_getter(config: &mut ArchGuardConfig) -> Result<DiscoveryOutcome, Pi
             && entry
                 .path()
                 .extension()
-                .is_some_and(|extension| extension == "py")
+                .is_some_and(|extension| extension == source_extension(&config.language))
         {
             let relative = entry
                 .path()
@@ -121,6 +121,14 @@ pub fn files_getter(config: &mut ArchGuardConfig) -> Result<DiscoveryOutcome, Pi
         Err(PipelineError { diagnostics })
     }
 }
+fn source_extension(language: &str) -> &'static str {
+    if language.eq_ignore_ascii_case("dart") {
+        "dart"
+    } else {
+        "py"
+    }
+}
+
 fn matcher(pattern: &str) -> Result<GlobMatcher, PipelineError> {
     let mut pattern = pattern;
     while let Some(rest) = pattern.strip_prefix("./") {

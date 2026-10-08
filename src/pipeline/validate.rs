@@ -25,11 +25,13 @@ pub fn validate(config: &ArchGuardConfig) -> Result<(), PipelineError> {
             location(None),
         ));
     }
-    if !config.language.eq_ignore_ascii_case("python") {
+    if !config.language.eq_ignore_ascii_case("python")
+        && !config.language.eq_ignore_ascii_case("dart")
+    {
         diagnostics.push(Diagnostic::error(
             "LANGUAGE_UNSUPPORTED",
             format!(
-                "Unsupported language '{}'; supported values: python",
+                "Unsupported language '{}'; supported values: python, dart",
                 config.language
             ),
             location(None),
