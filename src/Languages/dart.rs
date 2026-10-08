@@ -860,6 +860,40 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    // Encode absolute UTF-8 test paths without treating native separators as URI text.
+    fn file_uri(path: &Path) -> String {
+        use std::fmt::Write;
+        use std::path::Prefix;
+
+        assert!(path.is_absolute());
+        let mut uri = String::from("file://");
+        for component in path.components() {
+            match component {
+                Component::Prefix(prefix) => match prefix.kind() {
+                    Prefix::Disk(drive) | Prefix::VerbatimDisk(drive) => {
+                        write!(uri, "/{}:", char::from(drive)).unwrap();
+                    }
+                    _ => panic!("Test file URIs require a local drive"),
+                },
+                Component::RootDir => uri.push('/'),
+                Component::Normal(name) => {
+                    if !uri.ends_with('/') {
+                        uri.push('/');
+                    }
+                    for byte in name.to_str().expect("UTF-8 test path").bytes() {
+                        if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
+                            uri.push(char::from(byte));
+                        } else {
+                            write!(uri, "%{byte:02X}").unwrap();
+                        }
+                    }
+                }
+                _ => panic!("Test file URIs require normalized paths"),
+            }
+        }
+        uri
+    }
+
     fn put(root: &Path, path: &str, content: &str) {
         let file = root.join(path);
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
@@ -1272,10 +1306,49 @@ mod tests {
         assert!(local_uri(temp.path(), "a.dart?query").is_err());
         assert!(local_uri(temp.path(), "%2fetc.dart").is_err());
         assert!(local_uri(temp.path(), "%xx").is_err());
-        let file_uri = format!("file://{}", temp.path().join("a.dart").display());
+        let file_uri = file_uri(&temp.path().join("a.dart"));
         assert_eq!(
             local_uri(temp.path(), &file_uri).unwrap(),
             temp.path().join("a.dart")
         );
+    }
+
+    #[test]
+    fn file_uris_encode_spaces_reserved_characters_and_unicode() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("a b#%?[]é.dart");
+        let uri = file_uri(&path);
+        assert!(uri.starts_with("file:///"));
+        assert!(uri.ends_with("/a%20b%23%25%3F%5B%5D%C3%A9.dart"));
+        assert_eq!(local_uri(temp.path(), &uri).unwrap(), path);
+
+        for invalid in [
+            r"file://C:\Users\runner\a.dart",
+            "file:///tmp/a.dart?query",
+            "file:///tmp/a.dart#fragment",
+            "file:///tmp/a%5Cb.dart",
+            "file:///tmp/a%00.dart",
+            "file:///tmp/a\n.dart",
+            "file://server/share/a.dart",
+        ] {
+            assert!(local_uri(temp.path(), invalid).is_err(), "{invalid:?}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn file_uris_round_trip_windows_drive_paths() {
+        for path in [
+            r"C:\Program Files\Dart\a #%.dart",
+            "C:/Program Files/Dart/a #%.dart",
+            r"\\?\C:\Program Files\Dart\a #%.dart",
+        ] {
+            let uri = file_uri(Path::new(path));
+            assert_eq!(uri, "file:///C:/Program%20Files/Dart/a%20%23%25.dart");
+            assert_eq!(
+                local_uri(Path::new(r"D:\project"), &uri).unwrap(),
+                Path::new(r"C:\Program Files\Dart\a #%.dart")
+            );
+        }
     }
 }
